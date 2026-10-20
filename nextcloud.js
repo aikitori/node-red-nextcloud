@@ -1,15 +1,33 @@
 module.exports = function (RED) {
-  const dav = require('dav')
-  const webdav = require('webdav')
   const fs = require('fs')
-  const IcalExpander = require('ical-expander')
-  const moment = require('moment')
-  const https = require('https')
+  const { NextcloudClient, normalizePath } = require('./lib/dav')
+  const { expandEvents, sortEvents, parseVCard } = require('./lib/ical')
 
   function NextcloudConfigNode (config) {
     RED.nodes.createNode(this, config)
     this.address = config.address
     this.insecure = config.insecure
+    const node = this
+    let client = null
+
+    // one client (and connection pool) per server, created on first use
+    node.getClient = function () {
+      if (!client) {
+        const credentials = node.credentials || {}
+        client = new NextcloudClient({
+          address: node.address,
+          user: credentials.user,
+          pass: credentials.pass,
+          insecure: !!node.insecure
+        })
+      }
+      return client
+    }
+
+    node.on('close', function () {
+      if (client) client.close()
+      client = null
+    })
   }
   RED.nodes.registerType('nextcloud-credentials', NextcloudConfigNode, {
     credentials: {
@@ -18,112 +36,81 @@ module.exports = function (RED) {
     }
   })
 
+  // Wraps an async input handler: errors go to done() (catch node), status shows progress
+  function handleInput (node, prefix, handler) {
+    node.on('input', function (msg, send, done) {
+      send = send || function () { node.send.apply(node, arguments) }
+      done = done || function (err) { if (err) node.error(err, msg) }
+      if (!node.server) {
+        done(new Error(prefix + ' -> no server configured.'))
+        return
+      }
+      node.status({ fill: 'blue', shape: 'dot', text: 'requesting' })
+      Promise.resolve()
+        .then(() => handler(node.server.getClient(), msg, send))
+        .then(() => {
+          node.status({})
+          done()
+        }, (err) => {
+          const message = prefix + ' -> ' + (err && err.message ? err.message : err)
+          node.status({ fill: 'red', shape: 'ring', text: message.slice(0, 60) })
+          done(new Error(message))
+        })
+    })
+  }
+
+  function numberOr (value, fallback) {
+    const n = parseFloat(value)
+    return isNaN(n) ? fallback : n
+  }
+
+  function selectCollections (collections, name, kind) {
+    if (!name) return collections
+    const selected = collections.filter((c) => c.displayName === name)
+    if (!selected.length) {
+      throw new Error(kind + ' "' + name + '" not found, available: ' +
+        collections.map((c) => '"' + c.displayName + '"').join(', '))
+    }
+    return selected
+  }
+
   function NextcloudCalDav (config) {
     RED.nodes.createNode(this, config)
     this.server = RED.nodes.getNode(config.server)
     this.calendar = config.calendar
-    this.pastWeeks = config.pastWeeks || 0
-    this.futureWeeks = config.futureWeeks || 4
+    this.pastWeeks = numberOr(config.pastWeeks, 0)
+    this.futureWeeks = numberOr(config.futureWeeks, 4)
     const node = this
 
-    node.on('input', (msg) => {
-      let startDate = moment().startOf('day').subtract(this.pastWeeks, 'weeks')
-      let endDate = moment().endOf('day').add(this.futureWeeks, 'weeks')
-      const filters = [{
-        type: 'comp-filter',
-        attrs: { name: 'VCALENDAR' },
-        children: [{
-          type: 'comp-filter',
-          attrs: { name: 'VEVENT' },
-          children: [{
-            type: 'time-range',
-            attrs: {
-              start: startDate.format('YYYYMMDD[T]HHmmss[Z]'),
-              end: endDate.format('YYYYMMDD[T]HHmmss[Z]')
-            }
-          }]
-        }]
-      }]
-      // dav.debug.enabled = true;
-      const xhr = new dav.transport.Basic(
-        new dav.Credentials({
-          username: node.server.credentials.user,
-          password: node.server.credentials.pass
-        })
-      )
-      // Server + Basepath
-      let calDavUri = node.server.address + '/remote.php/dav/calendars/'
-      // User
-      calDavUri += node.server.credentials.user + '/'
-      dav.createAccount({ server: calDavUri, xhr: xhr, loadCollections: true, loadObjects: true })
-        .then(function (account) {
-          if (!account.calendars) {
-            node.error('Nextcloud:CalDAV -> no calendars found.')
-            return
+    handleInput(node, 'Nextcloud:CalDAV', async function (client, msg, send) {
+      const startDate = new Date()
+      startDate.setHours(0, 0, 0, 0)
+      startDate.setDate(startDate.getDate() - node.pastWeeks * 7)
+      const endDate = new Date()
+      endDate.setHours(23, 59, 59, 999)
+      endDate.setDate(endDate.getDate() + node.futureWeeks * 7)
+
+      let calendars = await client.listCalendars()
+      // only calendars that can hold events (skips task lists)
+      calendars = calendars.filter((c) => !c.components.length || c.components.includes('VEVENT'))
+      if (!calendars.length) throw new Error('no calendars found.')
+      calendars = selectCollections(calendars, msg.calendar || node.calendar, 'calendar')
+
+      for (const calendar of calendars) {
+        const entries = await client.calendarQuery(calendar.url, startDate, endDate)
+        let data = []
+        for (const entry of entries) {
+          try {
+            data = data.concat(expandEvents(entry.data, startDate, endDate))
+          } catch (error) {
+            node.warn('Nextcloud:CalDAV -> error parsing calendar entry ' + entry.href + ': ' + error.message)
           }
-          // account instanceof dav.Account
-          account.calendars.forEach(function (calendar) {
-            // Wenn Kalender gesetzt ist, dann nur diesen abrufen
-            let calName = msg.calendar || node.calendar
-            if (!calName || !calName.length || (calName && calName.length && calName === calendar.displayName)) {
-              dav.listCalendarObjects(calendar, { xhr: xhr, filters: filters })
-                .then(function (calendarEntries) {
-                  let msg = { 'payload': { 'name': calendar.displayName, 'data': [] } }
-                  calendarEntries.forEach(function (calendarEntry) {
-                    try {
-                      const ics = calendarEntry.calendarData
-                      const icalExpander = new IcalExpander({ ics, maxIterations: 100 })
-                      const events = icalExpander.between(startDate.toDate(), endDate.toDate())
-                      msg.payload.data = msg.payload.data.concat(convertEvents(events))
-                    } catch (error) {
-                      node.error('Error parsing calendar data: ' + error)
-                    }
-                  })
-                  node.send(msg)
-                }, function () {
-                  node.error('Nextcloud:CalDAV -> get ics went wrong.')
-                })
-            }
-          })
-        }, function () {
-          node.error('Nextcloud:CalDAV -> get calendars went wrong.')
-        })
-    })
-
-    function convertEvents (events) {
-      const mappedEvents = events.events.map(_convertEvent)
-      const mappedOccurrences = events.occurrences.map(_convertEvent)
-      return [].concat(mappedEvents, mappedOccurrences)
-    }
-
-    function _convertEvent (e) {
-      if (e) {
-        let startDate = e.startDate.toString()
-        let endDate = e.endDate.toString()
-
-        if (e.item) {
-          e = e.item
         }
-        if (e.duration.wrappedJSObject) {
-          delete e.duration.wrappedJSObject
-        }
-
-        return {
-          startDate: startDate,
-          endDate: endDate,
-          summary: e.summary || '',
-          description: e.description || '',
-          attendees: e.attendees,
-          duration: e.duration.toICALString(),
-          durationSeconds: e.duration.toSeconds(),
-          location: e.location || '',
-          organizer: e.organizer || '',
-          uid: e.uid || '',
-          isRecurring: false,
-          allDay: ((e.duration.toSeconds() % 86400) === 0)
-        }
+        const out = RED.util.cloneMessage(msg)
+        out.payload = { name: calendar.displayName, data: sortEvents(data) }
+        send(out)
       }
-    }
+    })
   }
   RED.nodes.registerType('nextcloud-caldav', NextcloudCalDav)
 
@@ -133,51 +120,17 @@ module.exports = function (RED) {
     this.addressBook = config.addressBook
     const node = this
 
-    node.on('input', (msg) => {
-      const xhr = new dav.transport.Basic(
-        new dav.Credentials({
-          username: node.server.credentials.user,
-          password: node.server.credentials.pass
-        })
-      )
+    handleInput(node, 'Nextcloud:CardDAV', async function (client, msg, send) {
+      let addressBooks = await client.listAddressBooks()
+      if (!addressBooks.length) throw new Error('no addressbooks found.')
+      addressBooks = selectCollections(addressBooks, msg.addressBook || node.addressBook, 'addressbook')
 
-      // Server + Basepath
-      let cardDavUri = node.server.address + '/remote.php/dav/addressbooks/users/'
-      // User
-      cardDavUri += node.server.credentials.user + '/'
-      // ToDo Filter ?
-      dav.createAccount({ server: cardDavUri, xhr: xhr, accountType: 'carddav' })
-        .then(function (account) {
-          if (!account.addressBooks) {
-            node.error('Nextcloud:CardDAV -> no addressbooks found.')
-            return
-          }
-          // account instanceof dav.Account
-          account.addressBooks.forEach(function (addressBook) {
-            // Wenn Adressbuch gesetzt ist, dann nur diesen abrufen
-            let c = msg.addressBook || node.addressBook
-            if (!c || !c.length || (c && c.length && c === addressBook.displayName)) {
-              dav.listVCards(addressBook, { xhr: xhr })
-                .then(function (addressBookEntries) {
-                  let vcfList = { 'payload': { 'name': addressBook.displayName, 'data': [] } }
-                  addressBookEntries.forEach(function (addressBookEntry) {
-                    const keyValue = addressBookEntry.addressData.split('\n')
-                    let vcfJson = {}
-                    for (let x = 0; x < keyValue.length; x++) {
-                      const temp = keyValue[x].split(':')
-                      vcfJson[temp[0]] = temp[1]
-                    }
-                    vcfList.payload.data.push(vcfJson)
-                  })
-                  node.send(vcfList)
-                }, function () {
-                  node.error('Nextcloud:CardDAV -> get cards went wrong.')
-                })
-            }
-          })
-        }, function () {
-          node.error('Nextcloud:CardDAV -> get addressBooks went wrong.')
-        })
+      for (const addressBook of addressBooks) {
+        const entries = await client.addressBookQuery(addressBook.url)
+        const out = RED.util.cloneMessage(msg)
+        out.payload = { name: addressBook.displayName, data: entries.map((e) => parseVCard(e.data)) }
+        send(out)
+      }
     })
   }
   RED.nodes.registerType('nextcloud-carddav', NextcloudCardDav)
@@ -188,28 +141,10 @@ module.exports = function (RED) {
     this.directory = config.directory
     const node = this
 
-    node.on('input', (msg) => {
-      const webDavUri = node.server.address + '/remote.php/webdav/'
-      const client = webdav(webDavUri, node.server.credentials.user, node.server.credentials.pass)
-      let directory = ''
-      if (msg.directory) {
-        directory = '/' + msg.directory
-      } else if (node.directory && node.directory.length) {
-        directory = '/' + node.directory
-      }
-      directory = directory.replace('//', '/')
-
-      // check option for self signed certs
-      const option = {}
-      if (node.server.insecure) {
-        option.agent = new https.Agent({ rejectUnauthorized: false })
-      }
-      client.getDirectoryContents(directory, option)
-        .then(function (contents) {
-          node.send({ 'payload': contents })
-        }, function (error) {
-          node.error('Nextcloud:WebDAV -> get directory content went wrong.' + JSON.stringify(error))
-        })
+    handleInput(node, 'Nextcloud:WebDAV', async function (client, msg, send) {
+      const directory = msg.directory || node.directory || ''
+      msg.payload = await client.listDirectory(directory)
+      send(msg)
     })
   }
   RED.nodes.registerType('nextcloud-webdav-list', NextcloudWebDavList)
@@ -220,31 +155,11 @@ module.exports = function (RED) {
     this.filename = config.filename
     const node = this
 
-    node.on('input', (msg) => {
-      const webDavUri = node.server.address + '/remote.php/webdav/'
-      const client = webdav(webDavUri, node.server.credentials.user, node.server.credentials.pass)
-      let filename = ''
-      if (msg.filename) {
-        filename = '/' + msg.filename
-      } else if (node.filename && node.filename.length) {
-        filename = '/' + node.filename
-      } else {
-        node.error('Nextcloud:WebDAV -> no filename specified.')
-        return
-      }
-      filename = filename.replace('//', '/')
-
-      // check option for self signed certs
-      const option = {}
-      if (node.server.insecure) {
-        option.agent = new https.Agent({ rejectUnauthorized: false })
-      }
-      client.getFileContents(filename, option)
-        .then(function (contents) {
-          node.send({ 'payload': contents })
-        }, function (error) {
-          node.error('Nextcloud:WebDAV -> get file went wrong.' + JSON.stringify(error))
-        })
+    handleInput(node, 'Nextcloud:WebDAV', async function (client, msg, send) {
+      const filename = msg.filename || node.filename
+      if (!filename) throw new Error('no filename specified.')
+      msg.payload = await client.getFile(filename)
+      send(msg)
     })
   }
   RED.nodes.registerType('nextcloud-webdav-out', NextcloudWebDavOut)
@@ -256,39 +171,17 @@ module.exports = function (RED) {
     this.filename = config.filename
     const node = this
 
-    node.on('input', (msg) => {
-      // Read upload file
-      let filename = node.filename
-      if (msg.filename) {
-        filename = msg.filename
-      }
-      const name = filename.substr((filename.lastIndexOf('/') + 1), filename.length)
-      const file = fs.readFileSync(filename)
-      // Set upload directory
-      let directory = '/'
-      if (msg.directory) {
-        directory += msg.directory + '/'
-      } else if (node.directory && node.directory.length) {
-        directory += node.directory + '/'
-      }
-      directory = directory.replace('//', '/')
-
-      const webDavUri = node.server.address + '/remote.php/webdav/'
-      const client = webdav(webDavUri, node.server.credentials.user, node.server.credentials.pass)
-
-      // check option for self signed certs
-      const option = {}
-      if (node.server.insecure) {
-        option.agent = new https.Agent({ rejectUnauthorized: false })
-      }
-
-      client.putFileContents(directory + name, file, { format: 'binary' }, option)
-        .then(function (contents) {
-          console.log(contents)
-          node.send({ 'payload': JSON.parse(contents) })
-        }, function () {
-          node.error('Nextcloud:WebDAV -> send file went wrong.')
-        })
+    handleInput(node, 'Nextcloud:WebDAV', async function (client, msg, send) {
+      // local file to upload, Windows paths with backslashes are fine as well
+      const filename = msg.filename || node.filename
+      if (!filename) throw new Error('no filename specified.')
+      const name = filename.split(/[\\/]/).pop()
+      const file = await fs.promises.readFile(filename)
+      const directory = msg.directory || node.directory || ''
+      const remotePath = normalizePath(directory + '/' + name)
+      const statusCode = await client.putFile(remotePath, file)
+      msg.payload = { path: remotePath, size: file.length, statusCode }
+      send(msg)
     })
   }
   RED.nodes.registerType('nextcloud-webdav-in', NextcloudWebDavIn)

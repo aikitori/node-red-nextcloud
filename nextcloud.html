@@ -53,8 +53,8 @@
             nname: {value: ''},
             server: {type: 'nextcloud-credentials', required: true},
             calendar: {value: '', required: false},
-            pastWeeks: { type: 'num', value: 0, required: true},
-            futureWeeks: { type: 'num', default: 4, required: true }
+            pastWeeks: { value: 0, required: true, validate: RED.validators.number() },
+            futureWeeks: { value: 4, required: true, validate: RED.validators.number() }
         },
         inputs: 1,
         outputs: 1,
@@ -113,8 +113,21 @@
         <dt class="optional">name <span class="property-type">string</span></dt>
         <dd> The name of the calendar</dd>
         <dt class="optional">data <span class="property-type">Array of objects</span></dt>
-        <dd> Each calendar entry is an ics parsed to a JSON object</dd>
+        <dd> All event instances in the time range, sorted by start. Recurring events are expanded
+        into one entry per occurrence. Each entry has these keys:
+        <ul>
+            <li><code>startDate</code>, <code>endDate</code>: ISO time in UTC, e.g. <code>2026-10-20T06:00:00.000Z</code>,
+            or a plain date like <code>2026-10-23</code> for all-day events (the end date is exclusive)</li>
+            <li><code>allDay</code>: true for all-day events</li>
+            <li><code>summary</code>, <code>description</code>, <code>location</code>, <code>organizer</code>, <code>uid</code></li>
+            <li><code>attendees</code>: array of <code>{name, email, role, status}</code></li>
+            <li><code>duration</code> (e.g. <code>PT30M</code>), <code>durationSeconds</code></li>
+            <li><code>isRecurring</code>: true for an occurrence of a series,
+            <code>recurrenceId</code>: the original start of that occurrence</li>
+        </ul></dd>
     </dl>
+    <p>All other properties of the incoming message are kept. Errors (wrong password, unknown
+    calendar, server not reachable ...) can be handled with a catch node.</p>
 </script>
 
 
@@ -163,7 +176,7 @@
             <span class="property-type">any</span>
         </dt>
         <dd> Incoming message triggers download of addressbook items. Any payload is possible. </dd>
-        <dt class="optional">calendar <span class="property-type">string</span></dt>
+        <dt class="optional">addressBook <span class="property-type">string</span></dt>
         <dd> Adressbook can be specified on incoming message or in nodes properties (expects displayname
         of addressbook - the name of the addressbook as shown in nextcloud contacts app). Downloads
         addressbook items from all addressbooks if not set.</dd>
@@ -180,6 +193,7 @@
         <dt class="optional">data <span class="property-type">Array of objects</span></dt>
         <dd> Each addressbook entry is an vcf parsed to a JSON object</dd>
     </dl>
+    <p>All other properties of the incoming message are kept. Errors can be handled with a catch node.</p>
 </script>
 
 
@@ -298,7 +312,7 @@
         <dt>payload
             <span class="property-type">any</span>
         </dt>
-        <dd> Incoming message triggers receiving a list containing a directory content. Any payload
+        <dd> Incoming message triggers the download of the file. Any payload
         is possible. </dd>
         <dt class="optional">filename <span class="property-type">string</span></dt>
         <dd> The filename must be absolute to the users server root path.</dd>
@@ -365,7 +379,7 @@
         <dt>payload
             <span class="property-type">any</span>
         </dt>
-        <dd> Incoming message triggers receiving a list containing a directory content. Any payload
+        <dd> Incoming message triggers the upload of the file. Any payload
         is possible. </dd>
         <dt class="optional">filename <span class="property-type">string</span></dt>
         <dd> The filename should be an absolute path, otherwise it will be relative to the working
@@ -381,9 +395,12 @@
             <span class="property-type">Object</span>
         </dt>
         <dd> Output payload is an object </dd>
+        <dt class="optional">path <span class="property-type">string</span></dt>
+        <dd> Path of the uploaded file on the server</dd>
         <dt class="optional">size <span class="property-type">number</span></dt>
-        <dd> Should be 0 in case of success </dd>
-		<dt class="optional">timeout <span class="property-type">number</span></dt>
-        <dd> Should be 0 in case of success</dd>
+        <dd> Uploaded bytes</dd>
+        <dt class="optional">statusCode <span class="property-type">number</span></dt>
+        <dd> 201 for a new file, 204 if an existing file was replaced</dd>
     </dl>
+    <p>Errors (local file missing, upload failed) can be handled with a catch node.</p>
 </script>

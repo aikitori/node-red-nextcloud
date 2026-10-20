@@ -7,18 +7,24 @@ Detailed information can be found in the build in info of each node
 ## Installation
 npm install node-red-contrib-nextcloud
 
+Requires Node.js 18 or newer and Node-RED 2.0 or newer. The nodes talk to Nextcloud with a small
+built-in DAV client, the only dependencies are `@xmldom/xmldom` and `ical-expander`.
+
+All nodes keep the properties of the incoming message and report errors with the message, so they
+can be handled with a catch node.
+
 ### CalDAV
-- based on [dav](https://github.com/lambdabaa/dav) package using CalDAV protocol
 - reads all calendars and sends a message for each calendar
-- reads a specified calandar if set in node properties or incoming message
+- reads a specified calandar if set in node properties or incoming message (`msg.calendar`)
+- only events in the configured range are requested, recurring events are expanded into
+  their occurrences
+- times are ISO strings in UTC (`2026-10-20T06:00:00.000Z`), all-day events use a plain date
 
 ### CardDAV
-- based on [dav](https://github.com/lambdabaa/dav) package using CalDAV protocol
 - reads all addressbooks and sends a message for each adressbook
 - reads a specified addressbook if set in node properties or incoming message
 
 ### WebDAV
-- based on [webdav](https://github.com/perry-mitchell/webdav-client) package using WebDAV protocol
 
 ##### Read content of a server directory
 - reads content of the users root directory if no folder is specified
@@ -33,3 +39,10 @@ npm install node-red-contrib-nextcloud
 - downloads a file from nextcloud server
 - file on server can be set in node properties or incoming message
 - sends file as binary buffer to the output. File can be stored using file node
+
+## Tests
+```
+npm install
+npm test
+```
+The tests run the nodes in Node-RED against a small mock Nextcloud (`test/mock-nextcloud.js`).
