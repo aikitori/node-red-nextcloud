@@ -25,6 +25,9 @@ _2026-10-20_
 * CalDAV offline cache (option, default on): the raw calendar data of every successful request is
   stored in `<userDir>/nextcloud-cache/<node id>.json`; when the server is unreachable the events are
   computed from it, marked with `payload.fromCache: true` and `payload.fetchedAt`, the status turns yellow
+* "Cache extra weeks" (default 4): requests fetch this many weeks more than they output and keep them in
+  the cache, so single events are known during longer outages; cached output has `cachedUntil` and
+  `complete` (false if the range goes beyond the cache)
 * stale keep-alive connections (e.g. after a server restart) are retried once instead of failing
 
 ## 0.1.3

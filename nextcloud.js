@@ -85,6 +85,8 @@ module.exports = function (RED) {
     this.futureWeeks = numberOr(config.futureWeeks, 4)
     // cache is on unless switched off explicitly (also for nodes created before the option existed)
     this.useCache = config.cache !== false
+    // extra weeks fetched for the cache only, so single events are known for some time of an outage
+    this.cacheWeeks = Math.max(0, numberOr(config.cacheWeeks, 4))
     const node = this
     let cache = null
     let offline = false
@@ -105,13 +107,15 @@ module.exports = function (RED) {
       if (!calendars.length) throw new Error('no calendars found.')
       const selected = selectCollections(calendars, name, 'calendar')
       const fetchedAt = new Date().toISOString()
+      const queryEnd = new Date(endDate)
+      if (cache) queryEnd.setDate(queryEnd.getDate() + node.cacheWeeks * 7)
       const entries = {}
       for (const calendar of selected) {
-        entries[calendar.url] = await client.calendarQuery(calendar.url, startDate, endDate)
+        entries[calendar.url] = await client.calendarQuery(calendar.url, startDate, queryEnd)
       }
       if (cache) {
         try {
-          cache.update(calendars, entries, fetchedAt)
+          cache.update(calendars, entries, fetchedAt, queryEnd.toISOString())
         } catch (err) {
           node.warn('Nextcloud:CalDAV -> could not write cache: ' + err.message)
         }
@@ -151,7 +155,8 @@ module.exports = function (RED) {
         offline = true
       }
 
-      for (const { calendar, entries, fetchedAt } of results) {
+      let incomplete = false
+      for (const { calendar, entries, fetchedAt, until } of results) {
         let data = []
         for (const entry of entries) {
           try {
@@ -162,12 +167,22 @@ module.exports = function (RED) {
         }
         const out = RED.util.cloneMessage(msg)
         out.payload = { name: calendar.displayName, data: sortEvents(data), fromCache: cached, fetchedAt }
+        if (cached) {
+          // single events after "until" are unknown, recurring events are still complete
+          out.payload.cachedUntil = until || null
+          out.payload.complete = !!until && new Date(until) >= endDate
+          if (!out.payload.complete) incomplete = true
+        }
         send(out)
       }
 
       if (cached) {
         const oldest = results.map((r) => r.fetchedAt).sort()[0]
-        return { fill: 'yellow', shape: 'ring', text: 'offline, cache from ' + new Date(oldest).toLocaleString() }
+        return {
+          fill: 'yellow',
+          shape: incomplete ? 'dot' : 'ring',
+          text: 'offline, cache from ' + new Date(oldest).toLocaleString() + (incomplete ? ' (incomplete)' : '')
+        }
       }
     })
 

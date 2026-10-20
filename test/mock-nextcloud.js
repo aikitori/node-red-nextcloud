@@ -45,6 +45,7 @@ class MockNextcloud {
   }
 
   close () {
+    if (!this.server.listening) return Promise.resolve()
     this.server.closeAllConnections()
     return new Promise((resolve) => this.server.close(resolve))
   }

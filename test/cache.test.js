@@ -8,7 +8,14 @@ const path = require('path')
 const helper = require('node-red-node-test-helper')
 const nextcloudNode = require('../nextcloud.js')
 const { MockNextcloud } = require('./mock-nextcloud')
-const { dailyStandup, upcoming } = require('./fixtures')
+const { dailyStandup, upcoming, calendar, ymd, inDays } = require('./fixtures')
+
+const later = calendar([
+  'BEGIN:VEVENT', 'UID:later', 'DTSTAMP:20250101T000000Z',
+  'DTSTART;TZID=Europe/Berlin:' + ymd(inDays(10)) + 'T120000',
+  'DTEND;TZID=Europe/Berlin:' + ymd(inDays(10)) + 'T130000',
+  'SUMMARY:In ten days', 'END:VEVENT'
+])
 
 helper.init(require.resolve('node-red'))
 
@@ -38,15 +45,23 @@ function request (msg = { payload: 1 }, timeout = 3000) {
   })
 }
 
+// every mock is closed after each test, also when an assertion failed halfway
+const servers = []
+
 function startMock () {
-  return new MockNextcloud({
+  return track(new MockNextcloud({
     user: USER,
     pass: PASS,
     calendars: {
-      personal: { displayName: 'Personal', objects: [dailyStandup, upcoming()] },
+      personal: { displayName: 'Personal', objects: [dailyStandup, upcoming(), later] },
       work: { displayName: 'Work', objects: [] }
     }
-  }).listen()
+  }))
+}
+
+function track (server) {
+  servers.push(server)
+  return server.listen()
 }
 
 let userDir
@@ -55,6 +70,7 @@ test.beforeEach(() => {
   helper.settings({ userDir })
 })
 test.afterEach(async () => {
+  await Promise.all(servers.splice(0).map((s) => s.close()))
   await helper.unload()
   helper.settings({})
   fs.rmSync(userDir, { recursive: true, force: true })
@@ -134,6 +150,7 @@ test('server back online delivers fresh data again', async () => {
   assert.ok(res.msgs.every((m) => m.payload.fromCache === true))
 
   server = new MockNextcloud({ user: USER, pass: PASS, calendars: { personal: { displayName: 'Personal', objects: [] } } })
+  servers.push(server)
   await new Promise((resolve) => {
     const http = require('http')
     server.server = http.createServer((req, r) => server.handle(req, r)).listen(port, '127.0.0.1', resolve)
@@ -170,4 +187,65 @@ test('without cache an outage is an error', async () => {
   const res = await request()
   assert.match(res.error, /ECONNREFUSED/)
   assert.ok(!fs.existsSync(path.join(userDir, 'nextcloud-cache')))
+})
+
+function timeRangeEnd (server) {
+  const report = server.requests.filter((r) => r.method === 'REPORT').pop()
+  return report.body.match(/end="(\d{8}T\d{6}Z)"/)[1]
+}
+
+function calDavTime (date) {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+}
+
+test('extra cache weeks are fetched and stored, but not output', async () => {
+  const server = await startMock()
+  const address = server.address
+  const credentials = { cfg: { user: USER, pass: PASS } }
+  // output 1 week, cache 1 more week
+  await helper.load(nextcloudNode, flow(address, { calendar: 'Personal', futureWeeks: 1, cacheWeeks: 1 }), credentials)
+  let res = await request({ payload: 1 }, 1000)
+  const end = new Date()
+  end.setHours(23, 59, 59, 999)
+  end.setDate(end.getDate() + 14)
+  assert.strictEqual(timeRangeEnd(server), calDavTime(end))
+  let personal = res.msgs[0].payload
+  assert.ok(!personal.data.some((e) => e.summary === 'In ten days'), 'event after the output range is not sent')
+  assert.strictEqual(personal.complete, undefined, 'online output has no cache markers')
+  await server.close()
+
+  // offline with the same range: complete
+  res = await request({ payload: 1 }, 1000)
+  personal = res.msgs[0].payload
+  assert.strictEqual(personal.fromCache, true)
+  assert.strictEqual(personal.complete, true)
+  assert.strictEqual(personal.cachedUntil, end.toISOString())
+  assert.ok(!personal.data.some((e) => e.summary === 'In ten days'))
+
+  // offline with a longer output range (as on later days of an outage): the cached event shows up,
+  // but the range exceeds the cache, so the output is marked incomplete
+  await helper.unload()
+  await helper.load(nextcloudNode, flow(address, { calendar: 'Personal', futureWeeks: 3, cacheWeeks: 1 }), credentials)
+  const statuses = []
+  helper.getNode('cal1').on('call:status', (call) => statuses.push(call.args[0]))
+  res = await request({ payload: 1 }, 1000)
+  personal = res.msgs[0].payload
+  assert.ok(personal.data.some((e) => e.summary === 'In ten days'), 'event from the extra cache weeks')
+  assert.strictEqual(personal.complete, false)
+  assert.match(statuses[statuses.length - 1].text, /incomplete/)
+})
+
+test('without cache only the output range is requested', async () => {
+  const server = await startMock()
+  try {
+    await helper.load(nextcloudNode, flow(server.address, { calendar: 'Personal', futureWeeks: 1, cacheWeeks: 4, cache: false }),
+      { cfg: { user: USER, pass: PASS } })
+    await request({ payload: 1 }, 1000)
+    const end = new Date()
+    end.setHours(23, 59, 59, 999)
+    end.setDate(end.getDate() + 7)
+    assert.strictEqual(timeRangeEnd(server), calDavTime(end))
+  } finally {
+    await server.close()
+  }
 })
