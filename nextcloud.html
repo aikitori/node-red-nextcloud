@@ -143,7 +143,8 @@
     <p>With "Use cached calendar data" (default on) the requested calendars are kept completely in
     <code>nextcloud-cache/&lt;node id&gt;.json</code> in the Node-RED user directory, so they survive a
     restart. Only changes since the last request are downloaded (sync-token), an unchanged calendar
-    costs just the calendar list request. If the server cannot be reached (network error, timeout or server
+    costs just the calendar list request. After a successful request the status shows "cached" with the
+    time, or "cache not written" if the file could not be saved. If the server cannot be reached (network error, timeout or server
     error), the events are computed from the cache for the current time range and the node status turns
     yellow. Wrong password or an unknown calendar still raise an error. The cache file is removed when the
     node is deleted.</p>

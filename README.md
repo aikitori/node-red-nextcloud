@@ -21,7 +21,7 @@ can be handled with a catch node.
 - times are ISO strings in UTC (`2026-10-20T06:00:00.000Z`), all-day events use a plain date
 - offline cache (default on): the requested calendars are kept completely in
   `nextcloud-cache/<node id>.json` in the Node-RED user directory, later requests download only the
-  changes (sync-token). If Nextcloud cannot be reached, the node answers from this cache
+  changes (sync-token). The node status shows "cached <time>" after a successful request. If Nextcloud cannot be reached, the node answers from this cache
   (`msg.payload.fromCache: true`, `msg.payload.fetchedAt`) and shows a yellow status.
   Wrong credentials are still reported as errors.
 

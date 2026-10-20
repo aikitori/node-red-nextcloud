@@ -92,6 +92,7 @@ test('falls back to the cache while the server is down, also after a restart', a
   assert.ok(fs.existsSync(file), 'cache file written')
   assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600)
   assert.ok(!fs.readFileSync(file, 'utf8').includes(PASS), 'no password in the cache')
+  assert.match(helper.getNode('cal1').status.lastCall.args[0].text, /^cached /)
 
   await server.close()
 

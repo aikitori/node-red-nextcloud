@@ -88,6 +88,8 @@ module.exports = function (RED) {
     const node = this
     let cache = null
     let offline = false
+    // error of the last cache write, shown in the status
+    let cacheError = null
 
     if (node.useCache && node.server) {
       const credentials = node.server.credentials || {}
@@ -136,8 +138,10 @@ module.exports = function (RED) {
       if (cache) {
         try {
           cache.update(calendars, entries, fetchedAt)
+          cacheError = null
         } catch (err) {
-          node.warn('Nextcloud:CalDAV -> could not write cache: ' + err.message)
+          if (!cacheError) node.warn('Nextcloud:CalDAV -> could not write cache: ' + err.message)
+          cacheError = err
         }
       }
       return selected.map((calendar) => ({ calendar, entries: entries[calendar.url], fetchedAt }))
@@ -193,6 +197,8 @@ module.exports = function (RED) {
         const oldest = results.map((r) => r.fetchedAt).sort()[0]
         return { fill: 'yellow', shape: 'ring', text: 'offline, cache from ' + new Date(oldest).toLocaleString() }
       }
+      if (cacheError) return { fill: 'yellow', shape: 'dot', text: 'cache not written: ' + cacheError.message.slice(0, 40) }
+      if (cache) return { fill: 'green', shape: 'dot', text: 'cached ' + new Date().toLocaleString() }
     })
 
     node.on('close', function (removed, done) {
