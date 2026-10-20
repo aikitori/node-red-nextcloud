@@ -65,7 +65,7 @@ test.afterEach(async () => {
 test('CalDAV returns events, keeps the input message and filters in UTC', async () => {
   const server = await mock()
   try {
-    await helper.load(nextcloudNode, flow('nextcloud-caldav', { calendar: '', pastWeeks: 0, futureWeeks: 1 }, server.address), credentials)
+    await helper.load(nextcloudNode, flow('nextcloud-caldav', { calendar: '', pastWeeks: 0, futureWeeks: 1, cache: false }, server.address), credentials)
     const n1 = helper.getNode('n1')
     const got = collect(helper.getNode('out'), 2)
     n1.receive({ payload: 'go', topic: 'cal', keep: { a: 1 } })

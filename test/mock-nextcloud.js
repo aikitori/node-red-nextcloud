@@ -2,6 +2,7 @@
 // Small in-memory Nextcloud stand-in: CalDAV, CardDAV and WebDAV, enough for the node tests.
 const http = require('http')
 const https = require('https')
+const crypto = require('crypto')
 
 function xmlEscape (s) {
   return String(s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c])
@@ -31,6 +32,8 @@ class MockNextcloud {
     this.addressBooks = options.addressBooks || {}
     this.files = new Map(Object.entries(options.files || {}))
     this.requests = []
+    // sync token -> calendar objects at that time, for sync-collection
+    this.snapshots = new Map()
     this.tls = options.tls
   }
 
@@ -97,13 +100,15 @@ class MockNextcloud {
         list.push(response(p + '/remote.php/dav/calendars/' + enc + '/' + id + '/',
           '<d:displayname>' + xmlEscape(cal.displayName) + '</d:displayname>' +
           '<d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>' +
-          '<cal:supported-calendar-component-set>' + comps + '</cal:supported-calendar-component-set>'))
+          '<cal:supported-calendar-component-set>' + comps + '</cal:supported-calendar-component-set>' +
+          '<d:sync-token>' + this.syncToken(cal) + '</d:sync-token>'))
       }
       return this.sendXml(res, list)
     }
     if (method === 'REPORT' && path.startsWith(calHome)) {
       const cal = this.calendars[path.slice(calHome.length).replace(/\/$/, '')]
       if (!cal) { res.writeHead(404); return res.end() }
+      if (body.toString().includes('<d:sync-collection')) return this.syncCollection(cal, body.toString(), res)
       return this.sendXml(res, (cal.objects || []).map((ics, i) =>
         response(p + '/remote.php/dav/calendars/' + enc + '/x/' + i + '.ics',
           '<d:getetag>"' + i + '"</d:getetag><cal:calendar-data>' + xmlEscape(ics) + '</cal:calendar-data>')))
@@ -129,6 +134,31 @@ class MockNextcloud {
     }
     res.writeHead(404)
     res.end()
+  }
+
+  syncToken (cal) {
+    const objects = (cal.objects || []).slice()
+    const token = 'http://sabre.io/ns/sync/' + crypto.createHash('sha1').update(JSON.stringify(objects)).digest('hex')
+    this.snapshots.set(token, objects)
+    return token
+  }
+
+  // objects changed since the requested token, removed ones with status 404
+  syncCollection (cal, body, res) {
+    const from = body.match(/<d:sync-token>([^<]*)</)[1]
+    const old = from ? this.snapshots.get(from) : []
+    if (!old) { res.writeHead(403); return res.end() }
+    const href = (i) => this.prefix + '/remote.php/dav/calendars/' + encodeURIComponent(this.user) + '/x/' + i + '.ics'
+    const objects = cal.objects || []
+    const list = []
+    objects.forEach((ics, i) => {
+      if (old[i] !== ics) list.push(response(href(i), '<d:getetag>"' + i + '"</d:getetag><cal:calendar-data>' + xmlEscape(ics) + '</cal:calendar-data>'))
+    })
+    for (let i = objects.length; i < old.length; i++) {
+      list.push('<d:response><d:href>' + href(i) + '</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>')
+    }
+    res.writeHead(207, { 'Content-Type': 'application/xml; charset=utf-8' })
+    res.end(multistatus(list).replace('</d:multistatus>', '<d:sync-token>' + this.syncToken(cal) + '</d:sync-token></d:multistatus>'))
   }
 
   webdav (method, file, body, res) {

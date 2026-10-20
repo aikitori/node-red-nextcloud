@@ -55,8 +55,7 @@
             calendar: {value: '', required: false},
             pastWeeks: { value: 0, required: true, validate: RED.validators.number() },
             futureWeeks: { value: 4, required: true, validate: RED.validators.number() },
-            cache: { value: true },
-            cacheWeeks: { value: 4, validate: RED.validators.number(true) }
+            cache: { value: true }
         },
         inputs: 1,
         outputs: 1,
@@ -67,10 +66,6 @@
         },
         oneditprepare: function() {
             if (this.cache === undefined) $('#node-input-cache').prop('checked', true)
-            if (this.cacheWeeks === undefined) $('#node-input-cacheWeeks').val(4)
-            $('#node-input-cache').on('change', function() {
-                $('#node-row-cacheWeeks').toggle($(this).is(':checked'))
-            }).trigger('change')
         }
     })
 </script>
@@ -100,10 +95,6 @@
         <label for="node-input-cache"><i class="fa fa-database"></i> Offline</label>
         <input type="checkbox" id="node-input-cache" style="display: inline-block; width: auto; vertical-align: top">
         <span style="width: 70%">Use cached calendar data when the server is unreachable</span>
-    </div>
-    <div class="form-row" id="node-row-cacheWeeks">
-        <label for="node-input-cacheWeeks"><i class="fa fa-calendar-plus-o"></i> Cache extra weeks</label>
-        <span class="ui-spinner ui-widget ui-widget-content ui-corner-all"><input type="number" id="node-input-cacheWeeks" min="0"></span>
     </div>
 </script>
 
@@ -147,22 +138,15 @@
         <dd> true if the server was unreachable and the data comes from the cache</dd>
         <dt class="optional">fetchedAt <span class="property-type">string</span></dt>
         <dd> ISO time of the request that delivered the data</dd>
-        <dt class="optional">cachedUntil <span class="property-type">string</span></dt>
-        <dd> only for cached data: ISO time up to which the cache knows all events</dd>
-        <dt class="optional">complete <span class="property-type">boolean</span></dt>
-        <dd> only for cached data: false if the requested range ends after <code>cachedUntil</code>,
-        single events at the end of the range may be missing then</dd>
     </dl>
     <h3>Offline cache</h3>
-    <p>With "Use cached calendar data" (default on) the raw calendar data of every successful request
-    is stored in <code>nextcloud-cache/&lt;node id&gt;.json</code> in the Node-RED user directory, so it
-    survives a restart. If the server cannot be reached (network error, timeout or server error), the
-    events are computed from the cache for the current time range and the node status turns yellow.
-    To bridge longer outages, every request fetches "Cache extra weeks" (default 4) more than it
-    outputs and keeps them in the cache. Recurring events are always calculated correctly from the
-    cache, single events are known up to <code>cachedUntil</code>; after that the output is marked
-    <code>complete: false</code> and the status shows "incomplete". Wrong password or an unknown calendar still raise an
-    error. The cache file is removed when the node is deleted.</p>
+    <p>With "Use cached calendar data" (default on) the requested calendars are kept completely in
+    <code>nextcloud-cache/&lt;node id&gt;.json</code> in the Node-RED user directory, so they survive a
+    restart. Only changes since the last request are downloaded (sync-token), an unchanged calendar
+    costs just the calendar list request. If the server cannot be reached (network error, timeout or server
+    error), the events are computed from the cache for the current time range and the node status turns
+    yellow. Wrong password or an unknown calendar still raise an error. The cache file is removed when the
+    node is deleted.</p>
     <p>All other properties of the incoming message are kept. Errors (wrong password, unknown
     calendar, server not reachable without cache ...) can be handled with a catch node.</p>
 </script>

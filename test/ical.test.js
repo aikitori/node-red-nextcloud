@@ -2,7 +2,7 @@
 process.env.TZ = 'Europe/Berlin'
 const test = require('node:test')
 const assert = require('node:assert')
-const { expandEvents, parseVCard } = require('../lib/ical')
+const { expandEvents, parseVCard, outside } = require('../lib/ical')
 const { toCalDavTime } = require('../lib/dav')
 const { calendar, dailyStandup, vcard } = require('./fixtures')
 
@@ -68,4 +68,17 @@ test('vcard values keep colons and folded lines', () => {
 
 test('CalDAV time-range is sent in UTC', () => {
   assert.strictEqual(toCalDavTime(new Date('2026-10-20T00:00:00+02:00')), '20261019T220000Z')
+})
+
+test('events clearly outside the range are skipped before parsing', () => {
+  const start = new Date('2026-10-20T00:00:00+02:00')
+  const end = new Date('2026-10-27T23:59:59+01:00')
+  const single = (from, to) => calendar(['BEGIN:VEVENT', 'UID:s', 'DTSTAMP:20250101T000000Z',
+    'DTSTART;TZID=Europe/Berlin:' + from, 'DTEND;TZID=Europe/Berlin:' + to, 'SUMMARY:x', 'END:VEVENT'])
+  assert.strictEqual(outside(single('20200101T100000', '20200101T110000'), start, end), true, 'long ago')
+  assert.strictEqual(outside(single('20300101T100000', '20300101T110000'), start, end), true, 'far ahead')
+  assert.strictEqual(outside(single('20261017T100000', '20261017T110000'), start, end), false, 'margin before start')
+  assert.strictEqual(outside(single('20261021T100000', '20261021T110000'), start, end), false, 'inside')
+  assert.strictEqual(outside(single('20200101T100000', '20301231T110000'), start, end), false, 'spans the range')
+  assert.strictEqual(outside(dailyStandup, start, end), false, 'recurring')
 })

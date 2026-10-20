@@ -85,8 +85,6 @@ module.exports = function (RED) {
     this.futureWeeks = numberOr(config.futureWeeks, 4)
     // cache is on unless switched off explicitly (also for nodes created before the option existed)
     this.useCache = config.cache !== false
-    // extra weeks fetched for the cache only, so single events are known for some time of an outage
-    this.cacheWeeks = Math.max(0, numberOr(config.cacheWeeks, 4))
     const node = this
     let cache = null
     let offline = false
@@ -102,20 +100,42 @@ module.exports = function (RED) {
       return calendars.filter((c) => !c.components.length || c.components.includes('VEVENT'))
     }
 
+    // with cache the whole calendar is kept, only the changes since the last request are downloaded
+    async function syncCalendar (client, calendar) {
+      const cached = cache.get(calendar.url)
+      if (cached && cached.syncToken && cached.syncToken === calendar.syncToken) return cached.entries
+      let entries = cached ? cached.entries : []
+      let changes
+      try {
+        changes = await client.syncCollection(calendar.url, cached ? cached.syncToken : '')
+      } catch (err) {
+        // token no longer known to the server: download everything again
+        if (!cached || ![403, 409].includes(err.statusCode)) throw err
+        entries = []
+        changes = await client.syncCollection(calendar.url, '')
+      }
+      const byHref = new Map(entries.map((e) => [e.href, e]))
+      for (const href of changes.deleted) byHref.delete(href)
+      for (const e of changes.changed) byHref.set(e.href, e)
+      // the token of the sync belongs to the data, the one of the calendar list may be newer
+      calendar.syncToken = changes.token
+      return Array.from(byHref.values())
+    }
+
     async function fetchOnline (client, name, startDate, endDate) {
       const calendars = eventCalendars(await client.listCalendars())
       if (!calendars.length) throw new Error('no calendars found.')
       const selected = selectCollections(calendars, name, 'calendar')
       const fetchedAt = new Date().toISOString()
-      const queryEnd = new Date(endDate)
-      if (cache) queryEnd.setDate(queryEnd.getDate() + node.cacheWeeks * 7)
       const entries = {}
       for (const calendar of selected) {
-        entries[calendar.url] = await client.calendarQuery(calendar.url, startDate, queryEnd)
+        entries[calendar.url] = cache
+          ? await syncCalendar(client, calendar)
+          : await client.calendarQuery(calendar.url, startDate, endDate)
       }
       if (cache) {
         try {
-          cache.update(calendars, entries, fetchedAt, queryEnd.toISOString())
+          cache.update(calendars, entries, fetchedAt)
         } catch (err) {
           node.warn('Nextcloud:CalDAV -> could not write cache: ' + err.message)
         }
@@ -155,8 +175,7 @@ module.exports = function (RED) {
         offline = true
       }
 
-      let incomplete = false
-      for (const { calendar, entries, fetchedAt, until } of results) {
+      for (const { calendar, entries, fetchedAt } of results) {
         let data = []
         for (const entry of entries) {
           try {
@@ -167,22 +186,12 @@ module.exports = function (RED) {
         }
         const out = RED.util.cloneMessage(msg)
         out.payload = { name: calendar.displayName, data: sortEvents(data), fromCache: cached, fetchedAt }
-        if (cached) {
-          // single events after "until" are unknown, recurring events are still complete
-          out.payload.cachedUntil = until || null
-          out.payload.complete = !!until && new Date(until) >= endDate
-          if (!out.payload.complete) incomplete = true
-        }
         send(out)
       }
 
       if (cached) {
         const oldest = results.map((r) => r.fetchedAt).sort()[0]
-        return {
-          fill: 'yellow',
-          shape: incomplete ? 'dot' : 'ring',
-          text: 'offline, cache from ' + new Date(oldest).toLocaleString() + (incomplete ? ' (incomplete)' : '')
-        }
+        return { fill: 'yellow', shape: 'ring', text: 'offline, cache from ' + new Date(oldest).toLocaleString() }
       }
     })
 

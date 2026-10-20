@@ -19,12 +19,10 @@ can be handled with a catch node.
 - only events in the configured range are requested, recurring events are expanded into
   their occurrences
 - times are ISO strings in UTC (`2026-10-20T06:00:00.000Z`), all-day events use a plain date
-- offline cache (default on): the last fetched calendar data is kept in
-  `nextcloud-cache/<node id>.json` in the Node-RED user directory. If Nextcloud cannot be reached,
-  the node answers from this cache (`msg.payload.fromCache: true`, `msg.payload.fetchedAt`) and shows
-  a yellow status. Each request fetches "Cache extra weeks" (default 4) more than it outputs, so
-  single events are still known during longer outages. Recurring events are always computed for the
-  current range. If the range goes beyond the cached data, the output has `complete: false`.
+- offline cache (default on): the requested calendars are kept completely in
+  `nextcloud-cache/<node id>.json` in the Node-RED user directory, later requests download only the
+  changes (sync-token). If Nextcloud cannot be reached, the node answers from this cache
+  (`msg.payload.fromCache: true`, `msg.payload.fetchedAt`) and shows a yellow status.
   Wrong credentials are still reported as errors.
 
 ### CardDAV

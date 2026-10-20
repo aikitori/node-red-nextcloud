@@ -7,7 +7,7 @@ _2026-10-20_
 * CalDAV
   * recurring events that started more than 100 occurrences ago were missing, now expanded correctly
   * the time range was sent as local time marked as UTC, now converted to UTC
-  * calendars are no longer downloaded completely, only one filtered query per calendar
+  * without cache calendars are no longer downloaded completely, only one filtered query per calendar
   * "Accept self signed certificates" now also works for CalDAV and CardDAV
   * **changed output:** `startDate` / `endDate` are ISO times in UTC (all-day events: plain date),
     `allDay` is taken from the event instead of guessed from the duration,
@@ -22,12 +22,10 @@ _2026-10-20_
   message, so catch nodes work; the node status shows running requests and errors
 * user names with special characters and server addresses with trailing slash or subdirectory work
 * tests against a mock Nextcloud (`npm test`)
-* CalDAV offline cache (option, default on): the raw calendar data of every successful request is
-  stored in `<userDir>/nextcloud-cache/<node id>.json`; when the server is unreachable the events are
-  computed from it, marked with `payload.fromCache: true` and `payload.fetchedAt`, the status turns yellow
-* "Cache extra weeks" (default 4): requests fetch this many weeks more than they output and keep them in
-  the cache, so single events are known during longer outages; cached output has `cachedUntil` and
-  `complete` (false if the range goes beyond the cache)
+* CalDAV offline cache (option, default on): the requested calendars are stored completely in
+  `<userDir>/nextcloud-cache/<node id>.json`, later requests download only the changes (sync-token); when the
+  server is unreachable the events are computed from it, marked with `payload.fromCache: true` and
+  `payload.fetchedAt`, the status turns yellow
 * stale keep-alive connections (e.g. after a server restart) are retried once instead of failing
 
 ## 0.1.3
