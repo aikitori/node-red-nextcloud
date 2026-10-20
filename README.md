@@ -19,6 +19,11 @@ can be handled with a catch node.
 - only events in the configured range are requested, recurring events are expanded into
   their occurrences
 - times are ISO strings in UTC (`2026-10-20T06:00:00.000Z`), all-day events use a plain date
+- offline cache (default on): the last fetched calendar data is kept in
+  `nextcloud-cache/<node id>.json` in the Node-RED user directory. If Nextcloud cannot be reached,
+  the node answers from this cache (`msg.payload.fromCache: true`, `msg.payload.fetchedAt`) and shows
+  a yellow status. Recurring events are computed for the current range, single events are known for
+  the range of the last successful request. Wrong credentials are still reported as errors.
 
 ### CardDAV
 - reads all addressbooks and sends a message for each adressbook

@@ -22,6 +22,10 @@ _2026-10-20_
   message, so catch nodes work; the node status shows running requests and errors
 * user names with special characters and server addresses with trailing slash or subdirectory work
 * tests against a mock Nextcloud (`npm test`)
+* CalDAV offline cache (option, default on): the raw calendar data of every successful request is
+  stored in `<userDir>/nextcloud-cache/<node id>.json`; when the server is unreachable the events are
+  computed from it, marked with `payload.fromCache: true` and `payload.fetchedAt`, the status turns yellow
+* stale keep-alive connections (e.g. after a server restart) are retried once instead of failing
 
 ## 0.1.3
 _2019-08-04_
